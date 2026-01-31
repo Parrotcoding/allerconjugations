@@ -61,47 +61,80 @@ button:disabled {
 
 <body>
 
+<!-- CREATE -->
 <div id="create" class="screen active">
   <h1>French Aller</h1>
-  <button onclick="createGame()">Live Game</button>
+  <button onclick="createGame('live')">Live Game</button>
+  <button class="secondary" onclick="createGame('self')">Self-Paced</button>
 </div>
 
+<!-- LOBBY -->
 <div id="lobby" class="screen">
   <h1>Join at</h1>
   <div class="big-code" id="code"></div>
+
   <div class="card">
     <h2>Players</h2>
     <div id="players" class="players"></div>
   </div>
-  <button id="startBtn" onclick="startInstructions()" disabled>Start Game</button>
+
+  <button id="startBtn" onclick="startInstructions()" disabled>
+    Start Game
+  </button>
 </div>
 
+<!-- INSTRUCTIONS -->
 <div id="instructions" class="screen">
   <h1>LOOK UP 👀</h1>
-  <button onclick="startRound()">Begin</button>
+  <div class="card">
+    <p class="list">
+      • Build the French sentence using <b>aller</b><br>
+      • Live mode: one speaker sees English<br>
+      • Self-paced: answer at your own speed<br>
+      • Faster answers = more points
+    </p>
+  </div>
+
+  <button id="beginBtn" onclick="startRound()" disabled>
+    Begin
+  </button>
 </div>
 
+<!-- QUESTION -->
 <div id="question" class="screen">
-  <h1>Question Live</h1>
+  <h1 id="questionTitle">Question Live</h1>
+
   <div class="card">
     <h2>Answered</h2>
-    <div id="answeredList">Waiting…</div>
+    <div id="answeredList" class="list">Waiting…</div>
   </div>
-  <button id="nextBtn" onclick="showLeaderboard()" disabled>Next</button>
+
+  <button id="nextBtn" onclick="nextStep()" disabled>
+    Next
+  </button>
 </div>
 
+<!-- LEADERBOARD -->
 <div id="leaderboard" class="screen">
   <h1>Leaderboard</h1>
-  <div id="leaderboardList"></div>
-  <button onclick="startRound()">Next</button>
+  <div id="leaderboardList" class="list"></div>
+
+  <button onclick="startRound()">Next Question</button>
+  <button class="secondary" onclick="endGame()">End Game</button>
+</div>
+
+<!-- END -->
+<div id="end" class="screen">
+  <h1>Game Finished</h1>
+  <button onclick="closeServer()">Close Server</button>
 </div>
 
 <script>
-/* ===== SUPABASE ===== */
-const SUPABASE_URL = "https://nbkdmwqwujjrflsgvbge.supabase.co";
-const SUPABASE_KEY = "sb_publishable_ImkyFfHOON2jse0RTduhww_eHGaTJTh";
-
+/* ================= SUPABASE ================= */
+const SUPABASE_URL = "YOUR_SUPABASE_URL";
+const SUPABASE_KEY = "YOUR_PUBLIC_ANON_KEY";
 const { createClient } = supabase;
+
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   global: {
     headers: () => ({
@@ -110,13 +143,11 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   }
 });
 
-/* ===== STATE ===== */
+/* ================= STATE ================= */
 let game = null;
-let pollPlayers = null;
-let pollGame = null;
-let pollAnswers = null;
+let pollGame, pollPlayers, pollAnswers;
 
-/* ===== UI ===== */
+/* ================= HELPERS ================= */
 function show(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   document.getElementById(id).classList.add("active");
@@ -125,14 +156,22 @@ function genCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-/* ===== CREATE ===== */
-async function createGame() {
+/* ================= QUESTIONS ================= */
+const QUESTIONS = [
+  { en: "Emily is going to the library.", fr: "elle va à la bibliothèque" },
+  { en: "We are going to the cafeteria.", fr: "nous allons à la cantine" },
+  { en: "They are going on vacation.", fr: "ils vont en vacances" },
+  { en: "I am going to study.", fr: "je vais étudier" }
+];
+
+/* ================= CREATE GAME ================= */
+async function createGame(mode) {
   const code = genCode();
   const hostSecret = crypto.randomUUID();
   localStorage.setItem("hostSecret", hostSecret);
 
   const { data } = await sb.from("games")
-    .insert({ code, mode: "live", host_secret: hostSecret })
+    .insert({ code, mode, host_secret: hostSecret })
     .select().single();
 
   game = data;
@@ -142,7 +181,7 @@ async function createGame() {
   show("lobby");
 }
 
-/* ===== POLLING (GUARANTEED) ===== */
+/* ================= POLLING ================= */
 function startPolling() {
   pollPlayers = setInterval(loadPlayers, 2000);
   pollGame = setInterval(loadGame, 1500);
@@ -150,12 +189,14 @@ function startPolling() {
 
 async function loadPlayers() {
   if (!game) return;
+
   const { data } = await sb.from("players")
     .select("*")
     .eq("game_id", game.id);
 
   const el = document.getElementById("players");
   el.innerHTML = "";
+
   data.forEach(p => {
     const d = document.createElement("div");
     d.className = "player";
@@ -163,11 +204,14 @@ async function loadPlayers() {
     el.appendChild(d);
   });
 
-  document.getElementById("startBtn").disabled = data.length === 0;
+  const ready = data.length > 0;
+  document.getElementById("startBtn").disabled = !ready;
+  document.getElementById("beginBtn").disabled = !ready;
 }
 
 async function loadGame() {
   if (!game) return;
+
   const { data } = await sb.from("games")
     .select("*")
     .eq("id", game.id)
@@ -176,9 +220,12 @@ async function loadGame() {
   game = data;
 }
 
-/* ===== FLOW ===== */
+/* ================= FLOW ================= */
 async function startInstructions() {
-  await sb.from("games").update({ status: "instructions" }).eq("id", game.id);
+  await sb.from("games")
+    .update({ status: "instructions" })
+    .eq("id", game.id);
+
   show("instructions");
 }
 
@@ -189,32 +236,55 @@ async function startRound() {
 
   if (!players.length) return alert("No players");
 
+  const q = QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)];
+
   await sb.from("players")
     .update({ answered: false })
     .eq("game_id", game.id);
 
   await sb.from("games").update({
     status: "question",
-    question_index: game.question_index + 1
+    question_index: game.question_index + 1,
+    current_question: q,
+    speaker_player_id:
+      game.mode === "live"
+        ? players[Math.floor(Math.random() * players.length)].id
+        : null
   }).eq("id", game.id);
 
-  pollAnswers = setInterval(loadAnswered, 1000);
+  game.question_index++;
+  document.getElementById("questionTitle").textContent =
+    game.mode === "live" ? "Question Live" : "Self-Paced Question";
+
+  document.getElementById("answeredList").textContent =
+    game.mode === "live" ? "Waiting…" : "Answering…";
+
+  document.getElementById("nextBtn").disabled = game.mode === "live";
+  pollAnswers = setInterval(checkAnswered, 1000);
+
   show("question");
 }
 
-async function loadAnswered() {
+async function checkAnswered() {
   const { data } = await sb.from("players")
-    .select("name, answered")
+    .select("answered")
     .eq("game_id", game.id);
 
-  const answered = data.filter(p => p.answered);
-  document.getElementById("answeredList").innerHTML =
-    answered.map(p => p.name).join("<br>");
+  const answered = data.filter(p => p.answered).length;
 
-  if (answered.length === data.length && data.length > 0) {
+  if (game.mode === "live" && answered === data.length && data.length > 0) {
     document.getElementById("nextBtn").disabled = false;
     clearInterval(pollAnswers);
   }
+
+  if (game.mode === "self") {
+    clearInterval(pollAnswers);
+    showLeaderboard();
+  }
+}
+
+async function nextStep() {
+  showLeaderboard();
 }
 
 async function showLeaderboard() {
@@ -226,7 +296,24 @@ async function showLeaderboard() {
   leaderboardList.innerHTML =
     data.map((p,i)=>`${i+1}. ${p.name} — ${p.total_points}`).join("<br>");
 
+  await sb.from("games")
+    .update({ status: "leaderboard" })
+    .eq("id", game.id);
+
   show("leaderboard");
+}
+
+async function endGame() {
+  await sb.from("games")
+    .update({ status: "ended" })
+    .eq("id", game.id);
+
+  show("end");
+}
+
+async function closeServer() {
+  await sb.from("games").delete().eq("id", game.id);
+  location.reload();
 }
 </script>
 
