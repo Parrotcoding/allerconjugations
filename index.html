@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>French Aller – Join</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<style>
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system;
+  background: #0f172a;
+  color: white;
+}
+.screen { display: none; padding: 40px; min-height: 100vh; }
+.screen.active { display: block; }
+h1 { font-size: 42px; }
+input {
+  font-size: 20px;
+  padding: 12px;
+  width: 100%;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  border: none;
+}
+button {
+  background: #6366f1;
+  border: none;
+  color: white;
+  padding: 14px 28px;
+  font-size: 18px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.card {
+  background: #1e293b;
+  padding: 24px;
+  border-radius: 16px;
+}
+.wordbank {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+.word {
+  background: #334155;
+  padding: 12px 18px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.answer {
+  min-height: 50px;
+  background: #020617;
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 16px;
+}
+.timer {
+  font-size: 32px;
+  margin-top: 10px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- JOIN -->
+<div id="join" class="screen active">
+  <h1>Join Game</h1>
+  <input id="codeInput" placeholder="Game Code">
+  <input id="nameInput" placeholder="Your Name">
+  <button onclick="joinGame()">Join</button>
+</div>
+
+<!-- LOBBY -->
+<div id="lobby" class="screen">
+  <h1>Waiting for host…</h1>
+</div>
+
+<!-- LOOK UP -->
+<div id="instructions" class="screen">
+  <h1>LOOK UP 👀</h1>
+  <p>Instructions are on the board.</p>
+</div>
+
+<!-- QUESTION -->
+<div id="question" class="screen">
+  <h1 id="prompt"></h1>
+  <div class="timer" id="timer">0</div>
+  <div id="answer" class="answer"></div>
+  <div id="wordbank" class="wordbank"></div>
+  <button onclick="submitAnswer()">Submit</button>
+</div>
+
+<!-- LEADERBOARD -->
+<div id="leaderboard" class="screen">
+  <h1>Leaderboard</h1>
+  <div id="leaderboardList"></div>
+</div>
+
+<!-- END -->
+<div id="end" class="screen">
+  <h1>Game Over</h1>
+  <div id="finalList"></div>
+</div>
+
+<script>
+/* ===== SUPABASE ===== */
+const SUPABASE_URL = "YOUR_SUPABASE_URL";
+const SUPABASE_KEY = "YOUR_PUBLIC_ANON_KEY";
+const { createClient } = supabase;
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  global: {
+    headers: () => ({
+      "join-token": localStorage.getItem("joinToken")
+    })
+  }
+});
+
+/* ===== STATE ===== */
+let game, player, startTime;
+let builtSentence = [];
+
+/* ===== HELPERS ===== */
+function show(id) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
+
+/* ===== JOIN ===== */
+async function joinGame() {
+  const code = codeInput.value.toUpperCase();
+  const name = nameInput.value || "Player";
+
+  const { data: g } = await sb.from("games").select("*").eq("code", code).single();
+  if (!g) return alert("Game not found");
+
+  game = g;
+  const token = crypto.randomUUID();
+  localStorage.setItem("joinToken", token);
+
+  const { data: p } = await sb.from("players")
+    .insert({
+      game_id: game.id,
+      name,
+      pronoun: "je",
+      join_token: token
+    })
+    .select().single();
+
+  player = p;
+  subscribeGame();
+  show("lobby");
+}
+
+/* ===== SUBSCRIPTIONS ===== */
+function subscribeGame() {
+  sb.channel("game")
+    .on("postgres_changes",
+      { event: "update", table: "games", filter: `id=eq.${game.id}` },
+      handleGameUpdate
+    ).subscribe();
+}
+
+function handleGameUpdate(payload) {
+  game = payload.new;
+  if (game.status === "instructions") show("instructions");
+  if (game.status === "question") loadQuestion();
+  if (game.status === "leaderboard") loadLeaderboard();
+  if (game.status === "ended") loadFinal();
+  if (payload.eventType === "DELETE") {
+    alert("Game closed");
+    location.reload();
+  }
+}
+
+/* ===== QUESTION ===== */
+function loadQuestion() {
+  builtSentence = [];
+  document.getElementById("answer").textContent = "";
+  startTime = Date.now();
+
+  const q = game.current_question;
+  const isSpeaker = game.speaker_player_id === player.id;
+
+  document.getElementById("prompt").textContent =
+    isSpeaker ? q.en : "Build the sentence";
+
+  const words = q.fr.split(" ");
+  const bank = document.getElementById("wordbank");
+  bank.innerHTML = "";
+
+  if (!isSpeaker) {
+    shuffle(words).forEach(w => {
+      const el = document.createElement("div");
+      el.className = "word";
+      el.textContent = w;
+      el.onclick = () => {
+        builtSentence.push(w);
+        document.getElementById("answer").textContent = builtSentence.join(" ");
+        el.remove();
+      };
+      bank.appendChild(el);
+    });
+  }
+
+  show("question");
+}
+
+/* ===== SUBMIT ===== */
+async function submitAnswer() {
+  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  const points = Math.max(1000 - elapsed * 10, 500);
+  const correct = builtSentence.join(" ") === game.current_question.fr;
+
+  await sb.from("answers").insert({
+    game_id: game.id,
+    player_id: player.id,
+    question_index: game.question_index,
+    is_correct: correct,
+    points_awarded: points
+  });
+
+  await sb.from("players")
+    .update({
+      answered: true,
+      total_points: player.total_points + points
+    })
+    .eq("id", player.id);
+
+  show("lobby");
+}
+
+/* ===== LEADERBOARD ===== */
+async function loadLeaderboard() {
+  const { data } = await sb.from("players")
+    .select("name,total_points")
+    .eq("game_id", game.id)
+    .order("total_points", { ascending: false });
+
+  leaderboardList.innerHTML = data.map(
+    (p,i)=>`${i+1}. ${p.name} — ${p.total_points}`
+  ).join("<br>");
+
+  show("leaderboard");
+}
+
+/* ===== FINAL ===== */
+function loadFinal() {
+  finalList.innerHTML = leaderboardList.innerHTML;
+  show("end");
+}
+
+/* ===== UTILS ===== */
+function shuffle(arr) {
+  return arr.sort(() => Math.random() - 0.5);
+}
+</script>
+</body>
+</html>
