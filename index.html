@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>French Aller – Join</title>
+<title>French Aller – Join (Debug)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -16,6 +16,21 @@ body {
 }
 .screen { display: none; padding: 40px; min-height: 100vh; }
 .screen.active { display: block; }
+
+#debug {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: #020617;
+  color: #94a3b8;
+  font-size: 12px;
+  padding: 8px;
+  border-top: 1px solid #334155;
+}
+
 h1 { font-size: 42px; }
 input {
   font-size: 20px;
@@ -74,7 +89,6 @@ button {
 <!-- INSTRUCTIONS -->
 <div id="instructions" class="screen">
   <h1>LOOK UP 👀</h1>
-  <p>Instructions are on the board.</p>
 </div>
 
 <!-- QUESTION -->
@@ -96,7 +110,26 @@ button {
   <h1>Game Over</h1>
 </div>
 
+<!-- DEBUG PANEL -->
+<div id="debug"></div>
+
 <script>
+/* ================= DEBUG ================= */
+const debugEl = document.getElementById("debug");
+function log(msg, obj) {
+  const time = new Date().toLocaleTimeString();
+  const line = document.createElement("div");
+  line.textContent = `[${time}] ${msg}`;
+  debugEl.appendChild(line);
+  debugEl.scrollTop = debugEl.scrollHeight;
+
+  if (obj !== undefined) {
+    console.log(msg, obj);
+  } else {
+    console.log(msg);
+  }
+}
+
 /* ===== SUPABASE ===== */
 const SUPABASE_URL = "https://nbkdmwqwujjrflsgvbge.supabase.co";
 const SUPABASE_KEY = "sb_publishable_ImkyFfHOON2jse0RTduhww_eHGaTJTh";
@@ -109,12 +142,10 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
     })
   }
 });
-
 /* ================= STATE ================= */
 let game = null;
 let player = null;
 let poll = null;
-
 let lastStatus = null;
 let lastQuestionIndex = null;
 let built = [];
@@ -123,6 +154,7 @@ let built = [];
 function show(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   document.getElementById(id).classList.add("active");
+  log("UI -> " + id);
 }
 
 /* ================= JOIN ================= */
@@ -130,20 +162,27 @@ async function joinGame() {
   const code = codeInput.value.toUpperCase();
   const name = nameInput.value || "Player";
 
-  const { data: g } = await sb
+  log("Joining game with code", code);
+
+  const { data: g, error } = await sb
     .from("games")
     .select("*")
     .eq("code", code)
     .single();
 
-  if (!g) return alert("Game not found");
+  if (error || !g) {
+    log("Game lookup failed", error);
+    alert("Game not found");
+    return;
+  }
 
   game = g;
+  log("Game loaded", game);
 
   const token = crypto.randomUUID();
   localStorage.setItem("joinToken", token);
 
-  const { data: p } = await sb.from("players")
+  const { data: p, error: pe } = await sb.from("players")
     .insert({
       game_id: game.id,
       name,
@@ -153,7 +192,14 @@ async function joinGame() {
     .select()
     .single();
 
+  if (pe) {
+    log("Player insert failed", pe);
+    alert("Failed to join");
+    return;
+  }
+
   player = p;
+  log("Player joined", player);
 
   poll = setInterval(pollGame, 1500);
   show("lobby");
@@ -161,39 +207,41 @@ async function joinGame() {
 
 /* ================= POLLING ================= */
 async function pollGame() {
-  const { data } = await sb
+  log("Polling game…");
+
+  const { data, error } = await sb
     .from("games")
     .select("*")
     .eq("id", game.id)
     .single();
 
-  if (!data) return;
+  if (error || !data) {
+    log("Poll failed", error);
+    return;
+  }
 
+  log("Game row", data);
   game = data;
 
-  // 🔑 STATUS CHANGE DETECTION
+  // STATUS CHANGE
   if (game.status !== lastStatus) {
+    log(`Status change: ${lastStatus} -> ${game.status}`);
     lastStatus = game.status;
 
-    if (game.status === "instructions") {
-      show("instructions");
-    }
-
-    if (game.status === "leaderboard") {
-      loadLeaderboard();
-    }
-
+    if (game.status === "instructions") show("instructions");
+    if (game.status === "leaderboard") loadLeaderboard();
     if (game.status === "ended") {
       show("end");
       clearInterval(poll);
     }
   }
 
-  // 🔑 QUESTION CHANGE DETECTION
+  // QUESTION CHANGE
   if (
     game.status === "question" &&
     game.question_index !== lastQuestionIndex
   ) {
+    log(`Question index change: ${lastQuestionIndex} -> ${game.question_index}`);
     lastQuestionIndex = game.question_index;
     loadQuestion();
   }
@@ -201,6 +249,8 @@ async function pollGame() {
 
 /* ================= QUESTION ================= */
 function loadQuestion() {
+  log("Loading question", game.current_question);
+
   built = [];
   wordbank.innerHTML = "";
   answer.textContent = "";
@@ -229,6 +279,8 @@ function loadQuestion() {
 
 /* ================= SUBMIT ================= */
 async function submitAnswer() {
+  log("Submitting answer");
+
   await sb.from("players")
     .update({ answered: true })
     .eq("id", player.id);
@@ -238,6 +290,8 @@ async function submitAnswer() {
 
 /* ================= LEADERBOARD ================= */
 async function loadLeaderboard() {
+  log("Loading leaderboard");
+
   const { data } = await sb.from("players")
     .select("name,total_points")
     .eq("game_id", game.id)
