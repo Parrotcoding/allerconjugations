@@ -53,10 +53,6 @@ button {
   padding: 12px;
   margin-top: 16px;
 }
-.timer {
-  font-size: 32px;
-  margin-top: 10px;
-}
 </style>
 </head>
 
@@ -75,7 +71,7 @@ button {
   <h1>Waiting for host…</h1>
 </div>
 
-<!-- LOOK UP -->
+<!-- INSTRUCTIONS -->
 <div id="instructions" class="screen">
   <h1>LOOK UP 👀</h1>
   <p>Instructions are on the board.</p>
@@ -84,7 +80,6 @@ button {
 <!-- QUESTION -->
 <div id="question" class="screen">
   <h1 id="prompt"></h1>
-  <div class="timer" id="timer">0</div>
   <div id="answer" class="answer"></div>
   <div id="wordbank" class="wordbank"></div>
   <button onclick="submitAnswer()">Submit</button>
@@ -99,7 +94,6 @@ button {
 <!-- END -->
 <div id="end" class="screen">
   <h1>Game Over</h1>
-  <div id="finalList"></div>
 </div>
 
 <script>
@@ -116,21 +110,22 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   }
 });
 
-/* ===== STATE ===== */
+/* ================= STATE ================= */
 let game = null;
 let player = null;
-let pollGame = null;
-let pollPlayers = null;
-let startTime = 0;
+let poll = null;
+
+let lastStatus = null;
+let lastQuestionIndex = null;
 let built = [];
 
-/* ===== UI ===== */
+/* ================= UI ================= */
 function show(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   document.getElementById(id).classList.add("active");
 }
 
-/* ===== JOIN ===== */
+/* ================= JOIN ================= */
 async function joinGame() {
   const code = codeInput.value.toUpperCase();
   const name = nameInput.value || "Player";
@@ -160,17 +155,12 @@ async function joinGame() {
 
   player = p;
 
-  startPolling();
+  poll = setInterval(pollGame, 1500);
   show("lobby");
 }
 
-/* ===== POLLING ===== */
-function startPolling() {
-  pollGame = setInterval(loadGame, 1500);
-  pollPlayers = setInterval(loadPlayers, 2000);
-}
-
-async function loadGame() {
+/* ================= POLLING ================= */
+async function pollGame() {
   const { data } = await sb
     .from("games")
     .select("*")
@@ -181,28 +171,44 @@ async function loadGame() {
 
   game = data;
 
-  if (game.status === "instructions") show("instructions");
-  if (game.status === "question") loadQuestion();
-  if (game.status === "leaderboard") loadLeaderboard();
-  if (game.status === "ended") loadFinal();
+  // 🔑 STATUS CHANGE DETECTION
+  if (game.status !== lastStatus) {
+    lastStatus = game.status;
+
+    if (game.status === "instructions") {
+      show("instructions");
+    }
+
+    if (game.status === "leaderboard") {
+      loadLeaderboard();
+    }
+
+    if (game.status === "ended") {
+      show("end");
+      clearInterval(poll);
+    }
+  }
+
+  // 🔑 QUESTION CHANGE DETECTION
+  if (
+    game.status === "question" &&
+    game.question_index !== lastQuestionIndex
+  ) {
+    lastQuestionIndex = game.question_index;
+    loadQuestion();
+  }
 }
 
-async function loadPlayers() {
-  // placeholder for leaderboard polling
-}
-
-/* ===== QUESTION ===== */
+/* ================= QUESTION ================= */
 function loadQuestion() {
   built = [];
-  document.getElementById("answer").textContent = "";
-  document.getElementById("wordbank").innerHTML = "";
-  startTime = Date.now();
+  wordbank.innerHTML = "";
+  answer.textContent = "";
 
   const q = game.current_question;
   const isSpeaker = game.speaker_player_id === player.id;
 
-  document.getElementById("prompt").textContent =
-    isSpeaker ? q.en : "Build the sentence";
+  prompt.textContent = isSpeaker ? q.en : "Build the sentence";
 
   if (!isSpeaker) {
     q.fr.split(" ").sort(() => Math.random() - 0.5).forEach(w => {
@@ -211,41 +217,26 @@ function loadQuestion() {
       el.textContent = w;
       el.onclick = () => {
         built.push(w);
-        document.getElementById("answer").textContent = built.join(" ");
+        answer.textContent = built.join(" ");
         el.remove();
       };
-      document.getElementById("wordbank").appendChild(el);
+      wordbank.appendChild(el);
     });
   }
 
   show("question");
 }
 
-/* ===== SUBMIT ===== */
+/* ================= SUBMIT ================= */
 async function submitAnswer() {
-  const elapsed = Math.floor((Date.now() - startTime) / 1000);
-  const points = Math.max(1000 - elapsed * 10, 500);
-  const correct = built.join(" ") === game.current_question.fr;
-
-  await sb.from("answers").insert({
-    game_id: game.id,
-    player_id: player.id,
-    question_index: game.question_index,
-    is_correct: correct,
-    points_awarded: points
-  });
-
   await sb.from("players")
-    .update({
-      answered: true,
-      total_points: player.total_points + points
-    })
+    .update({ answered: true })
     .eq("id", player.id);
 
   show("lobby");
 }
 
-/* ===== LEADERBOARD ===== */
+/* ================= LEADERBOARD ================= */
 async function loadLeaderboard() {
   const { data } = await sb.from("players")
     .select("name,total_points")
@@ -256,12 +247,6 @@ async function loadLeaderboard() {
     data.map((p,i)=>`${i+1}. ${p.name} — ${p.total_points}`).join("<br>");
 
   show("leaderboard");
-}
-
-/* ===== FINAL ===== */
-function loadFinal() {
-  finalList.innerHTML = leaderboardList.innerHTML;
-  show("end");
 }
 </script>
 
