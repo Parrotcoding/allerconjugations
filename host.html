@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -29,6 +28,10 @@ button {
   cursor: pointer;
   margin: 8px;
 }
+button:disabled {
+  background: #334155;
+  cursor: not-allowed;
+}
 .secondary { background: #334155; }
 .big-code {
   font-size: 96px;
@@ -52,7 +55,6 @@ button {
   border-radius: 12px;
   text-align: center;
 }
-.answered { background: #166534; }
 .list { font-size: 22px; line-height: 1.6; }
 .podium { display: flex; gap: 20px; }
 .podium div {
@@ -83,7 +85,7 @@ button {
     <h2>Players</h2>
     <div id="players" class="players"></div>
   </div>
-  <button onclick="startInstructions()">Start Game</button>
+  <button id="startBtn" onclick="startInstructions()" disabled>Start Game</button>
 </div>
 
 <!-- INSTRUCTIONS -->
@@ -97,7 +99,7 @@ button {
       • Others use the word bank
     </p>
   </div>
-  <button onclick="startRound()">Begin</button>
+  <button id="beginBtn" onclick="startRound()" disabled>Begin</button>
 </div>
 
 <!-- QUESTION -->
@@ -138,7 +140,7 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
     })
   }
 });
-
+/* ===== STATE ===== */
 let game;
 
 /* ===== HELPERS ===== */
@@ -152,10 +154,10 @@ function genCode() {
 
 /* ===== QUESTIONS ===== */
 const QUESTIONS = [
-  { en: "Emily is going to the library.", fr: "elle va à la bibliothèque" },
-  { en: "We are going to the cafeteria.", fr: "nous allons à la cantine" },
+  { en: "Emily is going to the library.", fr: "elle va à la bibliothèque" },
+  { en: "We are going to the cafeteria.", fr: "nous allons à la cantine" },
   { en: "They are going on vacation.", fr: "ils vont en vacances" },
-  { en: "I am going to study.", fr: "je vais étudier" }
+  { en: "I am going to study.", fr: "je vais étudier" }
 ];
 
 /* ===== GAME FLOW ===== */
@@ -164,9 +166,17 @@ async function createGame(mode) {
   const hostSecret = crypto.randomUUID();
   localStorage.setItem("hostSecret", hostSecret);
 
-  const { data } = await sb.from("games")
+  const { data, error } = await sb
+    .from("games")
     .insert({ code, mode, host_secret: hostSecret })
-    .select().single();
+    .select()
+    .single();
+
+  if (error) {
+    alert("Failed to create game");
+    console.error(error);
+    return;
+  }
 
   game = data;
   document.getElementById("code").textContent = code;
@@ -176,23 +186,40 @@ async function createGame(mode) {
 
 function subscribePlayers() {
   sb.channel("players")
-    .on("postgres_changes",
+    .on(
+      "postgres_changes",
       { event: "*", table: "players", filter: `game_id=eq.${game.id}` },
       loadPlayers
-    ).subscribe();
+    )
+    .subscribe();
+
   loadPlayers();
 }
 
 async function loadPlayers() {
-  const { data } = await sb.from("players").select("*").eq("game_id", game.id);
+  const { data, error } = await sb
+    .from("players")
+    .select("*")
+    .eq("game_id", game.id);
+
+  if (error) {
+    console.error(error);
+    return;
+  }
+
   const el = document.getElementById("players");
   el.innerHTML = "";
+
   data.forEach(p => {
     const d = document.createElement("div");
     d.className = "player";
     d.textContent = p.name;
     el.appendChild(d);
   });
+
+  const hasPlayers = data.length > 0;
+  document.getElementById("startBtn").disabled = !hasPlayers;
+  document.getElementById("beginBtn").disabled = !hasPlayers;
 }
 
 async function startInstructions() {
@@ -201,7 +228,16 @@ async function startInstructions() {
 }
 
 async function startRound() {
-  const { data: players } = await sb.from("players").select("*").eq("game_id", game.id);
+  const { data: players, error } = await sb
+    .from("players")
+    .select("*")
+    .eq("game_id", game.id);
+
+  if (error || !players || players.length === 0) {
+    alert("At least one player must be present.");
+    return;
+  }
+
   const speaker = players[Math.floor(Math.random() * players.length)];
   const q = QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)];
 
@@ -219,48 +255,57 @@ async function startRound() {
   game.question_index++;
   document.getElementById("answeredList").textContent = "Waiting…";
   document.getElementById("nextBtn").disabled = true;
+
   subscribeAnswers();
   show("question");
 }
 
 function subscribeAnswers() {
   sb.channel("answers")
-    .on("postgres_changes",
+    .on(
+      "postgres_changes",
       { event: "insert", table: "answers", filter: `game_id=eq.${game.id}` },
       loadAnswered
-    ).subscribe();
+    )
+    .subscribe();
 }
 
 async function loadAnswered() {
-  const { data } = await sb.from("answers")
+  const { data } = await sb
+    .from("answers")
     .select("players(name)")
     .eq("game_id", game.id)
     .eq("question_index", game.question_index)
     .order("created_at");
 
   document.getElementById("answeredList").innerHTML =
-    data.map((a,i)=>`${i+1}. ${a.players.name}`).join("<br>");
+    data.map((a, i) => `${i + 1}. ${a.players.name}`).join("<br>");
 
-  const { count } = await sb.from("players")
+  const { count: answered } = await sb
+    .from("players")
     .select("*", { count: "exact", head: true })
     .eq("game_id", game.id)
     .eq("answered", true);
 
-  const { count: total } = await sb.from("players")
+  const { count: total } = await sb
+    .from("players")
     .select("*", { count: "exact", head: true })
     .eq("game_id", game.id);
 
-  if (count === total) document.getElementById("nextBtn").disabled = false;
+  if (answered === total) {
+    document.getElementById("nextBtn").disabled = false;
+  }
 }
 
 async function showLeaderboard() {
-  const { data } = await sb.from("players")
+  const { data } = await sb
+    .from("players")
     .select("name,total_points")
     .eq("game_id", game.id)
     .order("total_points", { ascending: false });
 
   document.getElementById("leaderboardList").innerHTML =
-    data.map((p,i)=>`${i+1}. ${p.name} — ${p.total_points}`).join("<br>");
+    data.map((p, i) => `${i + 1}. ${p.name} — ${p.total_points}`).join("<br>");
 
   await sb.from("games").update({ status: "leaderboard" }).eq("id", game.id);
   show("leaderboard");
@@ -268,14 +313,18 @@ async function showLeaderboard() {
 
 async function endGame() {
   await sb.from("games").update({ status: "ended" }).eq("id", game.id);
-  const { data } = await sb.from("players")
+
+  const { data } = await sb
+    .from("players")
     .select("name,total_points")
     .eq("game_id", game.id)
     .order("total_points", { ascending: false })
     .limit(3);
 
   document.getElementById("podium").innerHTML =
-    data.map((p,i)=>`<div>${["🥇","🥈","🥉"][i]}<br>${p.name}<br>${p.total_points}</div>`).join("");
+    data.map((p, i) =>
+      `<div>${["🥇","🥈","🥉"][i]}<br>${p.name}<br>${p.total_points}</div>`
+    ).join("");
 
   show("end");
 }
