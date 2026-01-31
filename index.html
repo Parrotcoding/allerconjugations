@@ -34,11 +34,6 @@ button {
   border-radius: 10px;
   cursor: pointer;
 }
-.card {
-  background: #1e293b;
-  padding: 24px;
-  border-radius: 16px;
-}
 .wordbank {
   display: flex;
   flex-wrap: wrap;
@@ -50,7 +45,6 @@ button {
   padding: 12px 18px;
   border-radius: 10px;
   cursor: pointer;
-  font-weight: 600;
 }
 .answer {
   min-height: 50px;
@@ -76,7 +70,7 @@ button {
   <button onclick="joinGame()">Join</button>
 </div>
 
-<!-- LOBBY -->
+<!-- WAIT -->
 <div id="lobby" class="screen">
   <h1>Waiting for host…</h1>
 </div>
@@ -110,9 +104,10 @@ button {
 
 <script>
 /* ===== SUPABASE ===== */
-const SUPABASE_URL = "https://nbkdmwqwujjrflsgvbge.supabase.co";
-const SUPABASE_KEY = "sb_publishable_ImkyFfHOON2jse0RTduhww_eHGaTJTh";
+const SUPABASE_URL = "YOUR_SUPABASE_URL";
+const SUPABASE_KEY = "YOUR_PUBLIC_ANON_KEY";
 const { createClient } = supabase;
+
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   global: {
     headers: () => ({
@@ -122,10 +117,14 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 /* ===== STATE ===== */
-let game, player, startTime;
-let builtSentence = [];
+let game = null;
+let player = null;
+let pollGame = null;
+let pollPlayers = null;
+let startTime = 0;
+let built = [];
 
-/* ===== HELPERS ===== */
+/* ===== UI ===== */
 function show(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   document.getElementById(id).classList.add("active");
@@ -136,10 +135,16 @@ async function joinGame() {
   const code = codeInput.value.toUpperCase();
   const name = nameInput.value || "Player";
 
-  const { data: g } = await sb.from("games").select("*").eq("code", code).single();
+  const { data: g } = await sb
+    .from("games")
+    .select("*")
+    .eq("code", code)
+    .single();
+
   if (!g) return alert("Game not found");
 
   game = g;
+
   const token = crypto.randomUUID();
   localStorage.setItem("joinToken", token);
 
@@ -150,38 +155,47 @@ async function joinGame() {
       pronoun: "je",
       join_token: token
     })
-    .select().single();
+    .select()
+    .single();
 
   player = p;
-  subscribeGame();
+
+  startPolling();
   show("lobby");
 }
 
-/* ===== SUBSCRIPTIONS ===== */
-function subscribeGame() {
-  sb.channel("game")
-    .on("postgres_changes",
-      { event: "update", table: "games", filter: `id=eq.${game.id}` },
-      handleGameUpdate
-    ).subscribe();
+/* ===== POLLING ===== */
+function startPolling() {
+  pollGame = setInterval(loadGame, 1500);
+  pollPlayers = setInterval(loadPlayers, 2000);
 }
 
-function handleGameUpdate(payload) {
-  game = payload.new;
+async function loadGame() {
+  const { data } = await sb
+    .from("games")
+    .select("*")
+    .eq("id", game.id)
+    .single();
+
+  if (!data) return;
+
+  game = data;
+
   if (game.status === "instructions") show("instructions");
   if (game.status === "question") loadQuestion();
   if (game.status === "leaderboard") loadLeaderboard();
   if (game.status === "ended") loadFinal();
-  if (payload.eventType === "DELETE") {
-    alert("Game closed");
-    location.reload();
-  }
+}
+
+async function loadPlayers() {
+  // placeholder for leaderboard polling
 }
 
 /* ===== QUESTION ===== */
 function loadQuestion() {
-  builtSentence = [];
+  built = [];
   document.getElementById("answer").textContent = "";
+  document.getElementById("wordbank").innerHTML = "";
   startTime = Date.now();
 
   const q = game.current_question;
@@ -190,21 +204,17 @@ function loadQuestion() {
   document.getElementById("prompt").textContent =
     isSpeaker ? q.en : "Build the sentence";
 
-  const words = q.fr.split(" ");
-  const bank = document.getElementById("wordbank");
-  bank.innerHTML = "";
-
   if (!isSpeaker) {
-    shuffle(words).forEach(w => {
+    q.fr.split(" ").sort(() => Math.random() - 0.5).forEach(w => {
       const el = document.createElement("div");
       el.className = "word";
       el.textContent = w;
       el.onclick = () => {
-        builtSentence.push(w);
-        document.getElementById("answer").textContent = builtSentence.join(" ");
+        built.push(w);
+        document.getElementById("answer").textContent = built.join(" ");
         el.remove();
       };
-      bank.appendChild(el);
+      document.getElementById("wordbank").appendChild(el);
     });
   }
 
@@ -215,7 +225,7 @@ function loadQuestion() {
 async function submitAnswer() {
   const elapsed = Math.floor((Date.now() - startTime) / 1000);
   const points = Math.max(1000 - elapsed * 10, 500);
-  const correct = builtSentence.join(" ") === game.current_question.fr;
+  const correct = built.join(" ") === game.current_question.fr;
 
   await sb.from("answers").insert({
     game_id: game.id,
@@ -242,9 +252,8 @@ async function loadLeaderboard() {
     .eq("game_id", game.id)
     .order("total_points", { ascending: false });
 
-  leaderboardList.innerHTML = data.map(
-    (p,i)=>`${i+1}. ${p.name} — ${p.total_points}`
-  ).join("<br>");
+  leaderboardList.innerHTML =
+    data.map((p,i)=>`${i+1}. ${p.name} — ${p.total_points}`).join("<br>");
 
   show("leaderboard");
 }
@@ -254,11 +263,7 @@ function loadFinal() {
   finalList.innerHTML = leaderboardList.innerHTML;
   show("end");
 }
-
-/* ===== UTILS ===== */
-function shuffle(arr) {
-  return arr.sort(() => Math.random() - 0.5);
-}
 </script>
+
 </body>
 </html>
